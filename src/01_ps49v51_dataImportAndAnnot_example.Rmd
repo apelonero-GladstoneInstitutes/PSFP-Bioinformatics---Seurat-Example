@@ -1,0 +1,170 @@
+---
+title: "Workshop: ps49 vs ps51 preprocessing example"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r install libraries}
+### install packages if you don't have them
+## via CRAN
+# install.packages("dplyr")
+# install.packages("Seurat")
+# install.packages(BiocManager) ### this grants you access to an extremely robust collection of Bioinformatics packages/tools - you want this
+# install.packages("gdata") ### useful environment management package, use only if you know what it's doing :)
+## via BioMart
+# BiocManager::install("biomaRt")
+```
+
+
+### Load libraries and aligned scRNA data
+
+```{r  load libraries and functions}
+### load packages
+library(dplyr) ## package for data manipulation
+library(Seurat) ## scRNA seq package!
+library(biomaRt) ## genome database aggregator, extensively used in bioinformatics - available on Bioconductor
+
+### load functions
+## human to mouse gene conversion function (for cell cycle genes)
+## source: https://www.r-bloggers.com/2016/10/converting-mouse-to-human-gene-names-with-biomart-package/
+convertHumanGeneList <- function(x){
+require("biomaRt")
+human = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+mouse = useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+genesV2 = getLDS(attributes = c("hgnc_symbol"), filters = "hgnc_symbol", values = x , mart = human, attributesL = c("mgi_symbol"), martL = mouse, uniqueRows=T)
+humanx <- unique(genesV2[, 2])
+# Print the first 6 genes found to the screen
+print(head(humanx))
+return(humanx)
+}
+```
+All this code did was load up a couple of R packages and a custom function for gene name manipulation. Now we need to read in our scRNA data:
+```{r read data}
+### load dataset
+## NOTE: the `Read10x()` function automatically parses cellranger output folders!
+data.ps49v51oft_SRAdata <- Read10X(data.dir = "../data/ps49_vs_ps51_SRAaggrMay2021/OFTscRNA_ps49_ps59_AllRepsAggr/outs/count/filtered_feature_bc_matrix/")
+data.ps49v51oft_SRAdata[1:10,1:10]
+```
+This is a "sparse matrix" of counts:
+- every "." represents a "0"
+- each row is a gene
+- each column is a single cell
+
+This is the raw data we will work with. While possible to work with it directly, don't. It is best to read this data into Seurat (or a other scRNA analysis library) for easier handling:
+```{r}
+### Initialize the Seurat object with the raw (non-normalized data).
+ps49v51oft_SRAdata <- CreateSeuratObject(counts = data.ps49v51oft_SRAdata, project = "OFT_ps49_vs_ps51", min.cells = 3, min.features = 200)
+### remove raw data, leaving the Seurat object in memory
+rm(data.ps49v51oft_SRAdata)
+```
+Now we have a loosely-filtered Seurat object! This is the beginning of our analysis pipeline. But before we get to analysis, we have a little bit more data prep to do...
+
+Some details for later reading:
+
+  If you look at the sequencing depth and cell numbers per gem.group prior to `cellranger aggr` you'd see that we're losing some data during aggregation. This isn't a huge problem, but keep the following in mind:
+  
+  - Pay close attention to just how much data you're losing - it could be worth returning to the `aggr` step and excluding problematic samples to increase data depth
+  - Keep in mind that dropping tomepoints means you lose statistical power in downstream analyses
+  - You may need to iterate alignment -> analysis steps a few times to get it right!
+
+
+
+
+### Seurat Step #1: Annotate samples
+
+While you could work with the raw labels from your alignment workflow, it is recommended to annotate all of your data by genotype. This is done with metadata (data about the single-cell data)
+
+What this next cell does is construct metadata we'll add to the single-cell object by using a document that is required for cellranger (generally referred to as your "aggregation csv"): 
+```{r}
+### read in the aggregation .csv file you used in cellranger aggr
+AggrSheet <- read.csv("../data/ps49_vs_ps51_SRAaggrMay2021/OFTscRNA_ps49_ps59_AllRepsAggr/outs/aggregation.csv")
+colnames(AggrSheet) <- c("gem.group", "molecule_h5")
+head(AggrSheet)
+```
+
+Now let's modify this:
+```{r}
+### add a "condition" (genotype) column to this .csv
+AggrSheet$condition <- c("ps49",
+                         "ps49",
+                         "ps51",
+                         "ps51",
+                         "ps51",
+                         "ps51")
+AggrSheet$cellID <- as.numeric(seq.int(nrow(AggrSheet))) ### adds an "index" column (1, 2, 3, etc.) - we will use this in data preparation
+
+### drop columns we don't want to add to the Seurat object
+AggrSheet$molecule_h5 <- NULL
+### inspect this carefully to make sure all of the info is accurate
+AggrSheet
+```
+Notice that this is a separate dataset in your Global Environment. The information is not yet added to your single-cell data - that step is coming up!
+
+The next cell will perform some data transformation. This code is a combination of a widespread "older" method of adding metadata that I won't cover here (but that you may see in the future via other workshops). This code is a little less transparent than the older method, but I would encourage using this in practice. Why? Because:
+
+- using the .csv file given to cellranger will limit the number of human-introduced errors in sample annotation
+- the csv file is automatically included in the cellranger outputs, meaning your annotation data is directly tied to a file within the data output (eases distribution)
+
+```{r}
+### This code will look familiar if you see the "old" version of annotation...
+## create a "named list" of cells, pulled directly from your scRNA data
+cellID <- as.numeric(gsub(".*-","", (colnames(x = ps49v51oft_SRAdata)))) ### this variable name becomes the column name in the aggregation dataframe
+names(cellID) <- colnames(x = ps49v51oft_SRAdata)
+
+### coerce named list to dataframe
+metadata2add <- data.frame(cellID)
+
+### fill out metadata DF based on annotated aggr.csv
+## pull rownames as column - clunky but easy
+## TODO: merge(), but keep rownames and eliminate this rownames>colnames>rownames business
+metadata2add$rownames_for_metadata <- rownames(metadata2add) 
+metadata2add <- merge(metadata2add, AggrSheet, by="cellID", all.x = TRUE, no.dups = FALSE, )
+rownames(metadata2add) <- metadata2add$rownames_for_metadata
+## drop columns we don't want in the metadata
+metadata2add$cellID <- NULL
+metadata2add$rownames_for_metadata <- NULL
+head(metadata2add)
+```
+
+And now we can add metadata to the Seurat object:
+```{r}
+### Method 1: add metadata to Seurat object via a seperate dataframe w/ cell info w/ AddMetaData()
+ps49v51oft_SRAdata <- AddMetaData(ps49v51oft_SRAdata, metadata = metadata2add)
+head(ps49v51oft_SRAdata@meta.data)
+```
+Done!
+
+If you compare the groupings we have in metadata, you can see that we've merged each individual replicate into a pool of samples:
+```{r}
+levels(as.factor(ps49v51oft_SRAdata@meta.data$condition))
+```
+
+And before we move on we'll want to add a bit more metadata, but quantitive this time. This next code blaock calculates % features (mitochondiral reads, ribosomal reads - these are both proxies for sample "quality"), as well as cell cycle scores:
+```{r output rds}
+### Method 2: add metadata directly to Seurat object using the [[]] accessor
+# calc % mt
+ps49v51oft_SRAdata[["percent.mt"]] <- PercentageFeatureSet(ps49v51oft_SRAdata, pattern = "^mt-")
+# calc % ribo
+ps49v51oft_SRAdata[["percent.ribo"]] <- PercentageFeatureSet(ps49v51oft_SRAdata, pattern = "^Rp[sl]")
+# cell cycle scoring
+### Assign cell cycle scores
+## read cell cycle genes
+cc.genes <- readLines("../data/regev_lab_cell_cycle_genes.txt")
+## convert Human to Mouse
+cc.genes <- convertHumanGeneList(cc.genes)
+## segregate this list into markers of G2/M phase and markers of S phase
+s.genes <- cc.genes[1:45]
+g2m.genes <- cc.genes[46:100]
+## assign cell cycle scores - useful in later steps
+ps49v51oft_SRAdata <- CellCycleScoring(ps49v51oft_SRAdata, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+head(ps49v51oft_SRAdata@meta.data)
+```
+
+If you wanted to save this version of a Seurat object, you could do so with the following code:
+```{r}
+gdata::keep(ps49v51oft_SRAdata, sure = TRUE)
+# saveRDS(ps49v51oft_SRAdata, file = "../data/rds/01_rawObject_noFilters_scoresAdded_ps49and51Example.RDS")
+```
+saveRDS acts as a sort of "checkpoint" and I would recommend running this after any time-intensive tasks (more on that later). Please continue to notebook #2!

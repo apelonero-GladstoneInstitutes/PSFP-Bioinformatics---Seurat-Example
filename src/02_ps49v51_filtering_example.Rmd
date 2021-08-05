@@ -1,0 +1,289 @@
+---
+title: "SRA ps49 and ps51 data - QC filtering and clustering"
+---
+
+```{r load libraries}
+library(Seurat)
+library(ggplot2)
+library(gridExtra)
+library(stringr)
+### https://stackoverflow.com/questions/13605271/reasons-for-using-the-set-seed-function
+set.seed(7)
+```
+
+```{r check metadata}
+# if starting here, you can load up that object you saved from notebook #1:
+# ps49v51oft_SRAdata <- readRDS(file = "../data/rds/01_rawObject_noFilters_scoresAdded_ps49and51_05-24-2021.RDS")
+head(ps49v51oft_SRAdata@meta.data)
+```
+
+In most intro classes you'll see Violin Plots and Feature Scatter plots that represent our QC information because they are included in Seurat:
+```{r qc built ins}
+### ensure the active Seurat metadata "identity" is referring to the individual samples, not just by genotype
+Idents(ps49v51oft_SRAdata) <- "gem.group"
+### violinplots
+VlnPlot(ps49v51oft_SRAdata, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2, pt.size=0.1)
+VlnPlot(ps49v51oft_SRAdata, features = c("percent.mt", "percent.ribo"), ncol = 2, pt.size=0.1)
+### featurescatters
+FeatureScatter(ps49v51oft_SRAdata, feature1 = "nCount_RNA", feature2 = "percent.mt", pt.size=0.1, group.by = "gem.group")
+FeatureScatter(ps49v51oft_SRAdata, feature1 = "nCount_RNA", feature2 = "percent.ribo", pt.size=0.1, group.by = "gem.group")
+FeatureScatter(ps49v51oft_SRAdata, feature1 = "nFeature_RNA", feature2 = "percent.mt", pt.size=0.1, group.by = "gem.group")
+FeatureScatter(ps49v51oft_SRAdata, feature1 = "nFeature_RNA", feature2 = "percent.ribo", pt.size=0.1, group.by = "gem.group")
+FeatureScatter(ps49v51oft_SRAdata, feature1 = "nCount_RNA", feature2 = "nFeature_RNA", pt.size=0.1, group.by = "gem.group")
+```
+While useful, I find these alone to be too "fuzzy.' I opt to also pull out the cell metadata and look at the information with ggplot2, but the code can get a little confusing. If so, ignore the ggplot sections in this example and only base your filtering off of the built-in Seurat functions that you see in the cell above - it's what most people do and it tends to suffice.
+
+The ggplot versions:
+```{r qc unfiltered histograms}
+### pull data
+qc.metrics <- ps49v51oft_SRAdata[[c("nCount_RNA","nFeature_RNA","percent.mt","percent.ribo")]]
+
+### plot w/ ggplot
+# % mito
+qc.metrics %>%
+  ggplot(aes(percent.mt)) + 
+  geom_histogram(binwidth = 0.4, fill="yellow", colour="black") +
+  ggtitle("percent.mt") +
+  geom_vline(xintercept = c(1, 10)) ### you can play with these values to get an idea of where the filters should be set...
+
+# % ribo
+qc.metrics %>%
+  ggplot(aes(percent.ribo)) + 
+  geom_histogram(binwidth = 0.4, fill="yellow", colour="black") +
+  ggtitle("percent.ribo") +
+  geom_vline(xintercept = c(5, 33))
+
+# nCount
+qc.metrics %>%
+  ggplot(aes(nCount_RNA)) + 
+  geom_histogram(binwidth = 100, fill="yellow", colour="black") +
+  ggtitle("nCount_RNA") +
+  geom_vline(xintercept = c(2500, 23000))
+
+# nFeature
+qc.metrics %>%
+  ggplot(aes(nFeature_RNA)) + 
+  geom_histogram(binwidth = 100, fill="yellow", colour="black") +
+  ggtitle("nFeature_RNA") +
+  geom_vline(xintercept = c(1000, 5000))
+```
+Note that this doesn't account for gem.group, so pay attention to the built-in plots above this cell as well!
+
+Let's apply some filters to the extracted metadata and check things over...
+```{r qc filtered histograms}
+### filter by % mito and rido + nFeature (counts can be adjusted  momentarily, if needed)
+## store the thresholds as variables for easy use later...
+mito_cutoffs <- c(1,10)
+ribo_cutoffs <- c(5, 33)
+nFeat_cutoffs <- c(1000, 5000)
+nCount_cutoffs <- c(2500, 23000)
+
+qc.metrics_subset <- qc.metrics[qc.metrics$percent.mt > min(mito_cutoffs) & qc.metrics$percent.mt < max(mito_cutoffs) &
+                                  qc.metrics$percent.ribo > min(ribo_cutoffs) & qc.metrics$percent.ribo <  max(ribo_cutoffs) &
+                                  qc.metrics$nFeature_RNA > min(nFeat_cutoffs) & qc.metrics$nFeature_RNA <  max(nFeat_cutoffs) &
+                                  qc.metrics$nCount_RNA > min(nCount_cutoffs) & qc.metrics$nCount_RNA < max(nCount_cutoffs),]
+
+### summarize cell count differences pre/post filter
+# print(paste("# of cells before filters:", nrow(qc.metrics)))
+# print(paste("# of cells after filters:", nrow(qc.metrics_subset)))
+
+# % mito
+qc.metrics_subset %>%
+  ggplot(aes(percent.mt)) + 
+  geom_histogram(binwidth = 0.4, fill="yellow", colour="black") +
+  ggtitle("percent.mt") +
+  geom_vline(xintercept = c(min(mito_cutoffs), max(mito_cutoffs))) ### you can play with these values to get an idea of where the filters should be set...
+
+# % ribo
+qc.metrics_subset %>%
+  ggplot(aes(percent.ribo)) + 
+  geom_histogram(binwidth = 0.4, fill="yellow", colour="black") +
+  ggtitle("percent.ribo") +
+  geom_vline(xintercept = c(min(ribo_cutoffs), max(ribo_cutoffs)))
+
+# nCount
+qc.metrics_subset %>%
+  ggplot(aes(nCount_RNA)) + 
+  geom_histogram(binwidth = 100, fill="yellow", colour="black") +
+  ggtitle("nCount_RNA") +
+  geom_vline(xintercept = c(min(nCount_cutoffs), max(nCount_cutoffs)))
+
+# nFeature
+qc.metrics_subset %>%
+  ggplot(aes(nFeature_RNA)) + 
+  geom_histogram(binwidth = 100, fill="yellow", colour="black") +
+  ggtitle("nFeature_RNA") +
+  geom_vline(xintercept = c(min(nFeat_cutoffs), max(nFeat_cutoffs)))
+```
+Go back up to the filtering of the dataframe and tweak those values until you're happy with these histograms! Once that's all set, check the Violin and Feature Scatter plots after filtering the object based on these ggplot criteria...
+
+Remember, we set some variables above for the filters - let's use those in the Seurat subset call:
+```{r apply filters and plot QC metrics}
+### subset Seurat object (stored as temporary copy)
+cached_data  <- subset(ps49v51oft_SRAdata, 
+                       subset = percent.mt > min(mito_cutoffs) & percent.mt < max(mito_cutoffs) &
+                                  percent.ribo > min(ribo_cutoffs) & percent.ribo <  max(ribo_cutoffs) &
+                                  nFeature_RNA > min(nFeat_cutoffs) & nFeature_RNA <  max(nFeat_cutoffs) &
+                                  nCount_RNA > min(nCount_cutoffs) & nCount_RNA < max(nCount_cutoffs))
+
+# plot filtered data
+# violinplots
+VlnPlot(cached_data, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2, pt.size=0.1)
+VlnPlot(cached_data, features = c("percent.mt", "percent.ribo"), ncol = 2, pt.size=0.1)
+### featurescatters
+FeatureScatter(cached_data, feature1 = "nCount_RNA", feature2 = "percent.mt", pt.size=0.1, group.by = "gem.group")
+FeatureScatter(cached_data, feature1 = "nCount_RNA", feature2 = "percent.ribo", pt.size=0.1, group.by = "gem.group")
+FeatureScatter(cached_data, feature1 = "nFeature_RNA", feature2 = "percent.mt", pt.size=0.1, group.by = "gem.group")
+FeatureScatter(cached_data, feature1 = "nFeature_RNA", feature2 = "percent.ribo", pt.size=0.1, group.by = "gem.group")
+FeatureScatter(cached_data, feature1 = "nCount_RNA", feature2 = "nFeature_RNA", pt.size=0.1, group.by = "gem.group")
+```
+Looks pretty good! Might be able to be a little more stringent.. but let's see how this goes.
+
+```{r}
+### overwrite original seurat object with subset object
+ps49v51oft_SRAdata <- cached_data
+### keep only the Seurat object and move on to SCT
+gdata::keep(ps49v51oft_SRAdata, sure = TRUE)
+```
+
+### SCTransform
+```{r}
+head(ps49v51oft_SRAdata@meta.data)
+```
+
+```{r}
+### SCTransform 
+ps49v51oft_SRAdata <- SCTransform(ps49v51oft_SRAdata, assay = "RNA", new.assay.name = "SCT", 
+                                    variable.features.n = 4000, 
+                                    variable.features.rv.th = 1.3, 
+                                    vars.to.regress = c("percent.ribo", "percent.mt", "G2M.Score", "S.Score"), 
+                                    return.only.var.genes = TRUE)
+
+### PCA
+ps49v51oft_SRAdata <- RunPCA(ps49v51oft_SRAdata, verbose = FALSE, npcs = 100)
+### harmony
+ps49v51oft_SRAdata <- harmony::RunHarmony(ps49v51oft_SRAdata, group.by.vars = "gem.group", assay.use="SCT")
+### elbowplot, just to check PCA components individually
+ElbowPlot(ps49v51oft_SRAdata, ndims = 50)
+```
+
+```{r}
+### set dims
+dims <- 1:35 ### relatively high # of dims, UMAP can take it.
+### NOTE: n.components = 3l is for 3d plotting *cool_emoji*)
+### umap, neighbors, and clusters
+ps49v51oft_SRAdata <- RunUMAP(ps49v51oft_SRAdata, reduction = "harmony", dims = dims) # , n.components = 3L)
+ps49v51oft_SRAdata <- FindNeighbors(ps49v51oft_SRAdata, reduction = "harmony", dims = dims)
+ps49v51oft_SRAdata <- FindClusters(ps49v51oft_SRAdata, resolution = 0.25)
+
+DimPlot(ps49v51oft_SRAdata, split.by = "gem.group")
+DimPlot(ps49v51oft_SRAdata)
+```
+
+```{r}
+# saveRDS(ps49v51oft_SRAdata, "../data/rds/02_SCTandHarmonyObject_FilteredAndClustered_onlyVarGenes_ps49v51_05-24-2021.RDS")
+```
+
+```{r}
+# ps49v51oft_SRAdata <- readRDS("../data/rds/02_SCTandHarmonyObject_FilteredAndClustered_onlyVarGenes_ps49v51_05-24-2021.RDS")
+DimPlot(ps49v51oft_SRAdata, label = TRUE)
+```
+
+Ok, now let's drop low quality clusters (if any) and finish this initial processing.
+```{r}
+VlnPlot(ps49v51oft_SRAdata, features = "nFeature_RNA")
+VlnPlot(ps49v51oft_SRAdata, features = "nCount_RNA")
+# ggsave("../results/01_initial_clustering/01_FirstClustering_nFeature_05-21-2021.png", width = 12, height = 24, device = "png")
+DimPlot(ps49v51oft_SRAdata, label = TRUE)
+# ggsave("../results/01_initial_clustering/01_FirstClustering_Dimplot_05-21-2021.png,", width = 12, height = 12, device = "png")
+```
+We'll drop 9, 10, and 11 from this data - seems to contain little of value. I wonder about cluster 8... but I'm going to leave them in due to where the cells fall in the UMAP.
+```{r}
+clusters2keep <- 0:11
+clusters2keep <- clusters2keep[clusters2keep != 9 &
+                                 clusters2keep != 10 &
+                                 clusters2keep != 11]
+ps49v51oft_SRAdata <- subset(ps49v51oft_SRAdata, idents = clusters2keep)
+```
+
+```{r}
+### SCTransform - same settings as before
+ps49v51oft_SRAdata <- SCTransform(ps49v51oft_SRAdata, assay = "RNA", new.assay.name = "SCT", 
+                                    variable.features.n = 4000, 
+                                    variable.features.rv.th = 1.3, 
+                                    vars.to.regress = c("percent.ribo", "percent.mt", "G2M.Score", "S.Score"), 
+                                    return.only.var.genes = TRUE)
+
+### PCA
+ps49v51oft_SRAdata <- RunPCA(ps49v51oft_SRAdata, verbose = FALSE, npcs = 100)
+### harmony
+ps49v51oft_SRAdata <- harmony::RunHarmony(ps49v51oft_SRAdata, group.by.vars = "gem.group", assay.use="SCT")
+### elbowplot, just to check
+# ElbowPlot(ps49v51oft_SRAdata, ndims = 50)
+
+### set dims
+dims <- 1:35 ### relatively high # of dims, UMAP can take it.
+### NOTE: n.components = 3l is for 3d plotting *cool_emoji*)
+### umap, neighbors, and clusters
+ps49v51oft_SRAdata <- RunUMAP(ps49v51oft_SRAdata, reduction = "harmony", dims = dims) # , n.components = 3L)
+ps49v51oft_SRAdata <- FindNeighbors(ps49v51oft_SRAdata, reduction = "harmony", dims = dims)
+ps49v51oft_SRAdata <- FindClusters(ps49v51oft_SRAdata, resolution = 0.25)
+
+DimPlot(ps49v51oft_SRAdata, split.by = "gem.group")
+DimPlot(ps49v51oft_SRAdata)
+
+VlnPlot(ps49v51oft_SRAdata, features = "nFeature_RNA")
+VlnPlot(ps49v51oft_SRAdata, features = "nCount_RNA")
+# ggsave("../results/01_initial_clustering/02_SecondClustering_dropLowQual_nFeature_05-24-2021.png", width = 12, height = 24, device = "png")
+DimPlot(ps49v51oft_SRAdata, label = TRUE)
+# ggsave("../results/01_initial_clustering/02_SecondClustering_dropLowQual_Dimplot_05-24-2021.png,", width = 12, height = 12, device = "png")
+```
+
+
+```{r}
+### save RDS!
+# saveRDS(ps49v51oft_SRAdata, file = "../data/rds/03_SCTandHarmonyObject_FilteredAndReclustered_onlyVarGenes_ps49v51_05-24-2021.RDS")
+### find cluster markers
+## parallelize
+# future::plan("multisession", workers = 6) ### 12-core // 128gb RAM
+# options(future.globals.maxSize = 3000 * 1024^2) ### global var size increase - 3gb limit
+# future::plan()
+# 
+# FoundMarkers <- FindAllMarkers(ps49v51oft_SRAdata, random.seed = 7, logfc.threshold = 0.7)
+# future::plan("sequential") ### 12-core // 128gb RAM
+# write.csv(FoundMarkers, "../results/01_FindAllMarkers_harmony_res25e-2_05.csv")
+```
+
+```{r}
+### TODO: add top marker gene heatmaps, DE by genotype, and DE viz + GO
+FoundMarkers <-read.csv("../results/01_FindAllMarkers_harmony_res25e-2_05.csv")
+top5 <- FoundMarkers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC)
+### captures count of cells for the ident with the fewest
+maxcells  <- min(table(Idents(ps49v51oft_SRAdata)))
+
+### nested object subsetting with downsampling
+DoHeatmap(subset(ps49v51oft_SRAdata, downsample = maxcells), features = top5$gene, size = 3)+
+  theme(axis.text.y = element_text(size = 16))
+
+### OR no downsampling
+# DoHeatmap(subset(E105_andWTtimepoints, downsample = maxcells), features = top5$gene, size = 3)+
+#   theme(axis.text.y = element_text(size = 16))
+
+# ggsave("../results/Top5markergenes_Harmony.png", device = "png", width = 20, height = 20)
+```
+
+```{r}
+library(enrichR)
+listEnrichrSites()
+setEnrichrSite("Enrichr") 
+
+dbs <- listEnrichrDbs()
+
+dbs <- c("GO_Biological_Process_2021")
+
+enriched_terms <- enrichr(FoundMarkers$gene[FoundMarkers$cluster == "1"], dbs)
+enriched_terms[["GO_Biological_Process_2021"]]
+
+plotEnrich(enriched_terms[["GO_Biological_Process_2021"]], showTerms = 10, numChar = 40, y = "Count", orderBy = "P.value")
+```
+
