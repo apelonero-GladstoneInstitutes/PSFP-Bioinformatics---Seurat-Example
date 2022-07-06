@@ -1,3 +1,5 @@
+Apologies for not updating this since the course - please contact me if you would like the information that should be here!
+
 # PSFP Bioinformatics:
 #### computational need-to-knows and scRNA seq analysis
 
